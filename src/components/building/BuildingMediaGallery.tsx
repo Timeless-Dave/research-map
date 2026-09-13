@@ -13,10 +13,10 @@ import {
 type MediaTab = "photos" | "map";
 type MapMode = "streetview" | "satellite";
 
-interface GalleryItem {
-  src: string;
-  alt: string;
-}
+import type { GalleryPhoto } from "@/lib/building-media";
+import ResponsiveImage from "@/components/media/ResponsiveImage";
+
+type GalleryItem = GalleryPhoto;
 
 interface BuildingMediaGalleryProps {
   buildingName: string;
@@ -115,8 +115,14 @@ function ThumbnailStrip({
             i === activeIndex ? "border-[#EEB310]" : "border-white/80 opacity-80 hover:opacity-100"
           }`}
         >
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={photo.src} alt={photo.alt} className="h-full w-full object-cover" />
+          <ResponsiveImage
+            dir={photo.dir}
+            image={photo.image}
+            src={photo.src}
+            alt={photo.alt}
+            sizes="64px"
+            className="h-full w-full object-cover"
+          />
         </button>
       ))}
     </div>
@@ -174,12 +180,6 @@ export default function BuildingMediaGallery({
   const current = gallery[activeIndex];
   const hasGallery = gallery.length > 0;
   const hasMap = lat != null && lng != null && Number.isFinite(lat) && Number.isFinite(lng);
-
-  useEffect(() => {
-    setTab("photos");
-    setMapMode("streetview");
-    setExpanded(false);
-  }, [buildingName]);
 
   useEffect(() => {
     if (!expanded) return;
@@ -256,10 +256,14 @@ export default function BuildingMediaGallery({
 
     return (
       <div className="relative h-full w-full bg-gray-100">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
+        <ResponsiveImage
+          dir={current.dir}
+          image={current.image}
           src={current.src}
           alt={current.alt}
+          // Fullscreen fills the viewport; inline it is the ~420px detail panel.
+          sizes={fullscreen ? "100vw" : "(max-width: 768px) 100vw, 420px"}
+          priority={!fullscreen && activeIndex === 0}
           className={`h-full w-full ${fullscreen ? "object-contain bg-black" : "object-cover"}`}
         />
         <PhotoNav count={gallery.length} index={activeIndex} onPrev={goPrev} onNext={goNext} />

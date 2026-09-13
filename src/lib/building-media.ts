@@ -1,57 +1,51 @@
+import { getBuildingImages, type BuildingImage } from "@/lib/building-images.generated";
+
+export interface GalleryPhoto {
+  /** Fallback JPEG URL — also what non-<picture> call sites render. */
+  src: string;
+  alt: string;
+  /**
+   * Present only for photos with pre-generated derivatives. A photo sourced
+   * from a database `image_url` has no manifest entry and renders as a plain
+   * image at its single available size.
+   */
+  dir?: string;
+  image?: BuildingImage;
+}
+
 export interface BuildingMedia {
+  /** Derived from the first gallery photo — never hardcoded, so it cannot
+   *  drift from the widths the optimizer actually produced. */
   hero: string;
   heroAlt: string;
-  gallery: { src: string; alt: string }[];
+  gallery: GalleryPhoto[];
   /** Optional equirectangular 360° image URL (future: dedicated photospheres). */
   panorama?: string;
 }
 
-function gallery(
-  id: string,
-  name: string,
-  count: number
-): { src: string; alt: string }[] {
-  return Array.from({ length: count }, (_, i) => {
-    const num = String(i + 1).padStart(2, "0");
-    return {
-      src: `/buildings/${id}/${id}-${num}.jpeg`,
-      alt: `${name} — campus photo ${i + 1}`,
-    };
-  });
+function gallery(id: string, name: string): GalleryPhoto[] {
+  const dir = `/buildings/${id}`;
+  return getBuildingImages(id).map((image, i) => ({
+    src: `${dir}/${image.name}-${image.fallbackWidth}.jpg`,
+    alt: `${name} — campus photo ${i + 1}`,
+    dir,
+    image,
+  }));
 }
 
-/** Static media paths for buildings with uploaded campus photos. */
+function media(id: string, name: string, heroAlt: string): BuildingMedia {
+  const photos = gallery(id, name);
+  return { hero: photos[0]?.src ?? "", heroAlt, gallery: photos };
+}
+
+/** Static media for buildings with uploaded campus photos. */
 export const BUILDING_MEDIA: Record<string, BuildingMedia> = {
-  "stem-building": {
-    hero: "/buildings/stem-building/stem-building-01.jpeg",
-    heroAlt: "UAPB STEM Building exterior",
-    gallery: gallery("stem-building", "STEM Building", 3),
-  },
-  "woodward-hall": {
-    hero: "/buildings/woodward-hall/woodward-hall-01.jpeg",
-    heroAlt: "Woodward Hall exterior at UAPB",
-    gallery: gallery("woodward-hall", "Woodward Hall", 11),
-  },
-  "human-sciences-building": {
-    hero: "/buildings/human-sciences-building/human-sciences-building-01.jpeg",
-    heroAlt: "Human Sciences Building exterior at UAPB",
-    gallery: gallery("human-sciences-building", "Human Sciences Building", 9),
-  },
-  "larrison-hall": {
-    hero: "/buildings/larrison-hall/larrison-hall-01.jpeg",
-    heroAlt: "Larrison Hall exterior at UAPB",
-    gallery: gallery("larrison-hall", "Larrison Hall", 6),
-  },
-  "parker-1890-complex": {
-    hero: "/buildings/parker-1890-complex/parker-1890-complex-01.jpeg",
-    heroAlt: "S.J. Parker 1890 Extension Complex exterior",
-    gallery: gallery("parker-1890-complex", "S.J. Parker 1890 Extension Complex", 10),
-  },
-  "parker-ag-research": {
-    hero: "/buildings/parker-ag-research/parker-ag-research-01.jpeg",
-    heroAlt: "S.J. Parker Agriculture Research Building exterior",
-    gallery: gallery("parker-ag-research", "S.J. Parker Agriculture Research Bldg", 17),
-  },
+  "stem-building": media("stem-building", "STEM Building", "UAPB STEM Building exterior"),
+  "woodward-hall": media("woodward-hall", "Woodward Hall", "Woodward Hall exterior at UAPB"),
+  "human-sciences-building": media("human-sciences-building", "Human Sciences Building", "Human Sciences Building exterior at UAPB"),
+  "larrison-hall": media("larrison-hall", "Larrison Hall", "Larrison Hall exterior at UAPB"),
+  "parker-1890-complex": media("parker-1890-complex", "S.J. Parker 1890 Extension Complex", "S.J. Parker 1890 Extension Complex exterior"),
+  "parker-ag-research": media("parker-ag-research", "S.J. Parker Agriculture Research Bldg", "S.J. Parker Agriculture Research Building exterior"),
 };
 
 export function getBuildingMedia(buildingId: string): BuildingMedia | null {
