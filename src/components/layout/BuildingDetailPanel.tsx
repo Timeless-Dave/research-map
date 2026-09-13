@@ -66,10 +66,6 @@ export default function BuildingDetailPanel({
     : []);
 
   useEffect(() => {
-    setActivePhoto(0);
-  }, [buildingId]);
-
-  useEffect(() => {
     let cancelled = false;
 
     async function load() {
@@ -84,7 +80,11 @@ export default function BuildingDetailPanel({
         if (cancelled) return;
 
         if (!res.ok) {
-          setFetchError("Could not load research data. Please try again.");
+          setFetchError(
+            res.status === 404
+              ? "This building is not in the campus directory."
+              : "Could not load research data. Please try again."
+          );
           setLoading(false);
           return;
         }
@@ -148,6 +148,7 @@ export default function BuildingDetailPanel({
       <div className="flex-1 overflow-y-auto min-h-0">
         {hasGallery ? (
           <BuildingMediaGallery
+            key={buildingId}
             buildingName={name}
             gallery={gallery}
             activeIndex={activePhoto}

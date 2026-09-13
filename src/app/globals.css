@@ -1,5 +1,9 @@
 @import "tailwindcss";
 
+/* Short viewports: phone landscape, small laptops with browser chrome. Used to
+   drop decorative height so the list and map keep their space. */
+@custom-variant short (@media (max-height: 700px));
+
 :root {
   --background: #ffffff;
   --foreground: #171717;
@@ -70,45 +74,14 @@ body {
   height: 100%;
 }
 
-.building-map-pin {
-  display: block;
-  width: 36px;
-  height: 44px;
-  padding: 0;
-  border: none;
-  background: none;
-  cursor: pointer;
-  filter: drop-shadow(0 2px 4px rgb(0 0 0 / 30%));
-  transition: transform 0.15s ease;
+/* Keep basemap + clipped sat under HTML overlays (popups/markers).
+   Nested WebGL sat canvases can otherwise composite above the hover card. */
+.campus-map-container > .maplibregl-map > .maplibregl-canvas-container {
+  z-index: 0;
 }
-
-.building-map-pin:hover {
-  transform: scale(1.08);
-  z-index: 2;
-}
-
-.building-map-pin--selected {
-  animation: building-pin-pulse 1.4s ease-in-out infinite;
-  z-index: 3;
-}
-
-.building-map-pin__shape {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
-  background: #eeb310;
-  border: 2px solid #1a1a1a;
-  border-radius: 50% 50% 50% 0;
-  transform: rotate(-45deg);
-}
-
-.building-map-pin__icon {
-  width: 14px;
-  height: 14px;
-  color: #1a1a1a;
-  transform: rotate(45deg);
+.campus-map-container > .maplibregl-map > .maplibregl-marker,
+.campus-map-container .maplibregl-popup {
+  z-index: 5;
 }
 
 /* Baylor-style floating map controls */
@@ -116,8 +89,11 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
+  /* 44px is the minimum comfortable touch target; pointer devices can be
+     tighter without hurting usability. */
+  width: 44px;
+  height: 44px;
+  touch-action: manipulation;
   background: #fff;
   border: 1px solid rgb(0 0 0 / 8%);
   border-radius: 4px;
@@ -147,19 +123,14 @@ body {
   box-shadow: none;
 }
 
-@keyframes building-pin-pulse {
-  0%,
-  100% {
-    transform: scale(1);
-  }
-  50% {
-    transform: scale(1.12);
+@media (pointer: fine) {
+  .map-control-btn {
+    width: 36px;
+    height: 36px;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .building-map-pin,
-  .building-map-pin--selected,
   .map-control-btn {
     transition: none !important;
     animation: none !important;

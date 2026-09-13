@@ -13,13 +13,23 @@ export const CAMPUS_BOUNDS_FALLBACK: [[number, number], [number, number]] = [
 ];
 export const MAIN_CAMPUS_CENTER: [number, number] = [-92.02184, 34.24382];
 export const MAIN_CAMPUS_RADIUS_KM = 1.2;
-export const CAMPUS_MIN_ZOOM = 14;
-export const CAMPUS_MAX_ZOOM = 19;
+// Zoom-out reaches regional context (approaching campus from a highway,
+// airport, or hotel); zoom-in reaches door/path detail. 20 is the deepest level
+// MapTiler serves real satellite imagery for — beyond that it upscales.
+export const CAMPUS_MIN_ZOOM = 12;
+export const CAMPUS_MAX_ZOOM = 20;
 
-/** Soft pan limit around campus / Pine Bluff (west,south → east,north). */
+/**
+ * Soft pan limit around campus / Pine Bluff (west,south → east,north).
+ *
+ * Must stay wider than the viewport at CAMPUS_MIN_ZOOM. A 1280px viewport spans
+ * ~0.44° of longitude at zoom 12 (~0.88° at 2560px); when maxBounds is narrower
+ * than that, MapLibre cannot satisfy the constraint and the map never settles or
+ * finishes loading.
+ */
 export const MAP_MAX_BOUNDS: [[number, number], [number, number]] = [
-  [-92.12, 34.15],
-  [-91.90, 34.35],
+  [-92.62, 33.84],
+  [-91.42, 34.64],
 ];
 
 export const LEFT_PANEL_W = 400;

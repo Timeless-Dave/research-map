@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import AppHeader from "@/components/layout/AppHeader";
 import ProfileCard from "@/components/directory/ProfileCard";
+import { useUrlParam } from "@/hooks/use-url-param";
 import ProfileModal from "@/components/directory/ProfileModal";
 import type { DirectoryResearcher } from "@/lib/research-seed";
 import {
@@ -26,38 +27,34 @@ export default function PeopleDirectory({ embedded = false }: { embedded?: boole
   const [researchers, setResearchers] = useState<DirectoryResearcher[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
   const [query, setQuery] = useState("");
   const [department, setDepartment] = useState("");
-  const [openId, setOpenId] = useState<string | null>(null);
+  // `?person=` is URL-owned so profile deep links, Back/Forward, and returning
+  // to the directory all resolve to the same open profile.
+  const [openId, setOpenId] = useUrlParam("person");
   const [view, setView] = useState<"grid" | "list">("grid");
 
   useEffect(() => {
-    const person = new URLSearchParams(window.location.search).get("person");
-    if (person) setOpenId(person);
-  }, []);
-
-  useEffect(() => {
-    const url = new URL(window.location.href);
-    if (openId) url.searchParams.set("person", openId);
-    else url.searchParams.delete("person");
-    window.history.replaceState(null, "", url.toString());
-  }, [openId]);
-
-  useEffect(() => {
+    const controller = new AbortController();
+    setLoading(true);
+    setError(null);
     void (async () => {
       try {
-        const res = await fetch("/api/researchers");
+        const res = await fetch("/api/researchers", { signal: controller.signal });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const { researchers: data } = (await res.json()) as { researchers: DirectoryResearcher[] };
-        setResearchers(data);
+        if (!controller.signal.aborted) setResearchers(data);
       } catch (err) {
+        if (controller.signal.aborted) return;
         console.error("[researchers]", err instanceof Error ? err.message : err);
         setError("Could not load the directory. Please try again.");
       } finally {
-        setLoading(false);
+        if (!controller.signal.aborted) setLoading(false);
       }
     })();
-  }, []);
+    return () => controller.abort();
+  }, [attempt]);
 
   const departments = useMemo(
     () =>
@@ -168,7 +165,7 @@ export default function PeopleDirectory({ embedded = false }: { embedded?: boole
             </div>
           )}
 
-          {error && <p className="text-sm text-red-500">{error}</p>}
+          {error && <div role="alert" className="text-sm text-red-500"><p>{error}</p><button type="button" onClick={() => setAttempt(n => n + 1)} className="mt-2 min-h-11 rounded-lg border px-4 font-semibold">Retry directory</button></div>}
 
           {!loading && !error && filtered.length === 0 && (
             <div className="flex flex-col items-center justify-center py-16 gap-3 text-center">

@@ -1,15 +1,19 @@
 "use client";
 
-import { useRef, useEffect, useCallback } from "react";
-import maplibregl, {
-  type ExpressionSpecification,
-  type PaddingOptions,
+import { useRef, useEffect, useCallback, useState } from "react";
+// MapLibre 6 is ESM-only and no longer ships a default export.
+import * as maplibregl from "maplibre-gl";
+import type {
+  ExpressionSpecification,
+  MapLayerMouseEvent,
+  PaddingOptions,
 } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { bbox, featureCollection } from "@turf/turf";
 import type { Building } from "@/types";
 import type { GeoJsonBuildingMeta } from "@/types/building-selection";
 import type { DirectionsResult } from "@/lib/directions";
+import { routeParts } from "@/lib/directions";
 import {
   BUILDING_FOCUS_ZOOM,
   CAMPUS_MAX_ZOOM,
@@ -17,13 +21,10 @@ import {
   INITIAL_CENTER,
   INITIAL_ZOOM,
   LABEL_MIN_ZOOM,
-  LEFT_COLLAPSED_W,
-  LEFT_PANEL_W,
   MAP_MAX_BOUNDS,
   PIN_GOLD,
   PIN_GOLD_SELECTED,
   PIN_SECONDARY,
-  RIGHT_SIDEBAR_W,
   ROUTE_STEP_ZOOM,
   SECONDARY_PIN_MIN_ZOOM,
   cameraDuration,
@@ -41,11 +42,14 @@ import {
   resolveCategory,
   resolvePinTier,
 } from "@/lib/building-catalog";
-import {
-  buildSatelliteStyle,
-  clipPathFromZones,
-  syncOverlayCamera,
-} from "@/lib/satellite-overlay";
+import MapStatusOverlay, {
+  type MapFailure,
+  type MapStatus,
+} from "@/components/map/MapStatusOverlay";
+import { ILLUSTRATED_ENABLED, resolveMapView } from "@/lib/map-view";
+import { setIllustratedGround } from "@/lib/illustrated-ground";
+import { useUrlParam } from "@/hooks/use-url-param";
+import { usePathname } from "next/navigation";
 
 const MAPTILER_KEY = process.env.NEXT_PUBLIC_MAPTILER_KEY ?? "";
 
@@ -95,8 +99,9 @@ interface CampusMapProps {
   buildings: Building[];
   selectedId: string | null;
   onSelectBuilding: (id: string, meta?: GeoJsonBuildingMeta) => void;
-  leftPanelCollapsed?: boolean;
-  rightSidebarOpen?: boolean;
+  /** Screen-space occupied by overlaying UI, measured from the real elements.
+   *  Used as camera padding so fitted content lands in the visible area. */
+  mapInset?: MapInset;
   route?: DirectionsResult | null;
   userLocation?: UserLocation | null;
   onUserLocationChange?: (loc: UserLocation | null) => void;
@@ -121,9 +126,9 @@ function routeLineFeatureCollection(route: DirectionsResult | null): GeoJSON.Fea
 
 function routeEndpointsFeatureCollection(route: DirectionsResult | null): GeoJSON.FeatureCollection<GeoJSON.Point> {
   if (!route) return { type: "FeatureCollection", features: [] };
-  const coords = route.geometry.coordinates;
-  const start = coords[0];
-  const end = coords[coords.length - 1];
+  const parts = routeParts(route);
+  const start = parts[0]?.[0];
+  const end = parts.at(-1)?.at(-1);
   if (!start || !end) return { type: "FeatureCollection", features: [] };
   return {
     type: "FeatureCollection",
@@ -136,12 +141,24 @@ function routeEndpointsFeatureCollection(route: DirectionsResult | null): GeoJSO
 
 // ── Layout / camera helpers ────────────────────────────────────────────────────
 
-function buildMapPadding(lc: boolean, rs: boolean): PaddingOptions {
+export interface MapInset {
+  left: number;
+  bottom: number;
+}
+
+export const NO_MAP_INSET: MapInset = { left: 0, bottom: 0 };
+
+/**
+ * Camera padding from measured overlay geometry rather than layout constants.
+ * The sidebar is a fixed column on desktop but a bottom sheet on phones, so a
+ * hardcoded 400px left inset framed content off-screen on mobile.
+ */
+function buildMapPadding(inset: MapInset): PaddingOptions {
   return {
-    left:   (lc ? LEFT_COLLAPSED_W : LEFT_PANEL_W) + 16,
+    left:   inset.left + 16,
     top:    16,
-    right:  (rs ? RIGHT_SIDEBAR_W : 0) + 48,
-    bottom: 48,
+    right:  48,
+    bottom: inset.bottom + 48,
   };
 }
 
@@ -155,7 +172,7 @@ function clampPadding(map: maplibregl.Map, padding: PaddingOptions): PaddingOpti
     left:   Math.min(Number(padding.left ?? 0), Math.floor(w * 0.45)),
     right:  Math.min(Number(padding.right ?? 0), Math.floor(w * 0.25)),
     top:    Math.min(Number(padding.top ?? 0), Math.floor(h * 0.2)),
-    bottom: Math.min(Number(padding.bottom ?? 0), Math.floor(h * 0.2)),
+    bottom: Math.min(Number(padding.bottom ?? 0), Math.max(0, h - 160)),
   };
 }
 
@@ -165,9 +182,12 @@ function fitCampusView(map: maplibregl.Map, padding: PaddingOptions, animate = t
     const reduced = prefersReducedMotion();
     const token = Symbol("fitCampus");
     (map as maplibregl.Map & { __fitToken?: symbol }).__fitToken = token;
+    // MapLibre adds fitBounds padding to persistent camera padding. Apply it
+    // once here; double-padding pushed the phone campus above the viewport.
+    map.setPadding(clampPadding(map, padding));
     map.fitBounds(getMainCampusFitBounds(), {
-      padding: clampPadding(map, padding),
-      pitch:   0,
+      padding: 0,
+      pitch: map.getPitch(),
       bearing: 0,
       duration: cameraDuration(animate ? 600 : 0, reduced),
       maxZoom:  BUILDING_FOCUS_ZOOM,
@@ -189,7 +209,9 @@ function fitCampusView(map: maplibregl.Map, padding: PaddingOptions, animate = t
 
 function isMapReady(map: maplibregl.Map | null): map is maplibregl.Map {
   if (!map) return false;
-  try { return Boolean(map.getContainer()?.isConnected) && Boolean(map.isStyleLoaded()); }
+  // isStyleLoaded() becomes false while any source is loading, even after
+  // style.load. Using it here silently abandons asynchronous layer setup.
+  try { return Boolean(map.getContainer()?.isConnected) && Boolean(map.getStyle()?.layers); }
   catch { return false; }
 }
 
@@ -218,7 +240,7 @@ function satelliteTileURL(): string | null {
   return `https://api.maptiler.com/tiles/satellite-v2/{z}/{x}/{y}.jpg?key=${MAPTILER_KEY}`;
 }
 
-// Gold sketched outline around every satellite island
+// Illustration extent inherited from the campus geometry.
 function addZoneOutlines(map: maplibregl.Map, zones: Zone[]) {
   if (map.getSource(ZONES_SOURCE)) return;
   map.addSource(ZONES_SOURCE, { type: "geojson", data: featureCollection(zones) });
@@ -226,103 +248,16 @@ function addZoneOutlines(map: maplibregl.Map, zones: Zone[]) {
     paint: { "line-color": "#C8960A", "line-width": 2, "line-opacity": 0.5 } });
 }
 
-/**
- * Campus aerial as a clipped overlay map above the basemap canvas.
- * Outside the clip the full 2D basemap (roads, landuse) stays visible;
- * inside, satellite covers those roads so they never slash the aerial.
- * Symbol pins/labels/routes are mirrored onto the overlay so they stay
- * readable on campus; hit-testing stays on the base map (overlay is
- * pointer-events: none). Popups/HTML markers sit above the canvas host.
- */
-function mountSatelliteOverlay(
-  base: maplibregl.Map,
-  zones: Zone[],
-): { sat: maplibregl.Map; destroy: () => void } | null {
-  const tileURL = satelliteTileURL();
-  if (!tileURL || !MAPTILER_KEY) return null;
-
-  const canvasHost = base.getCanvasContainer();
-  const host = document.createElement("div");
-  host.className = "campus-sat-overlay";
-  host.style.cssText =
-    "position:absolute;inset:0;pointer-events:none;z-index:1;overflow:hidden;";
-  canvasHost.appendChild(host);
-
-  const sat = new maplibregl.Map({
-    container: host,
-    style: buildSatelliteStyle(tileURL, MAPTILER_KEY),
-    center: base.getCenter(),
-    zoom: base.getZoom(),
-    bearing: base.getBearing(),
-    pitch: base.getPitch(),
-    interactive: false,
-    attributionControl: false,
-    minZoom: CAMPUS_MIN_ZOOM,
-    maxZoom: CAMPUS_MAX_ZOOM,
-    maxBounds: MAP_MAX_BOUNDS,
-  });
-
-  const sync = () => {
-    if (!isMapReady(base) || !isMapReady(sat)) return;
-    syncOverlayCamera(base, sat);
-    const path = clipPathFromZones(base, zones);
-    host.style.clipPath = path;
-    host.style.setProperty("-webkit-clip-path", path);
-  };
-
-  const onBaseMove = () => sync();
-  const onBaseResize = () => {
-    try { sat.resize(); } catch { /* teardown */ }
-    sync();
-  };
-
-  base.on("move", onBaseMove);
-  base.on("resize", onBaseResize);
-
-  sat.once("load", () => {
-    sat.resize();
-    sync();
-  });
-
-  return {
-    sat,
-    destroy: () => {
-      base.off("move", onBaseMove);
-      base.off("resize", onBaseResize);
-      try { sat.remove(); } catch { /* already removed */ }
-      host.remove();
-    },
-  };
-}
-
-function mirrorOverlayDecorations(
-  sat: maplibregl.Map,
-  geojson: GeoJSON.FeatureCollection,
-  zones: Zone[],
-  pinImages: {
-    primary: HTMLImageElement;
-    secondary: HTMLImageElement;
-    selected: HTMLImageElement;
-  },
-) {
-  if (!sat.hasImage(PIN_IMAGE))
-    sat.addImage(PIN_IMAGE, pinImages.primary, { pixelRatio: 2 });
-  if (!sat.hasImage(PIN_IMAGE_SECONDARY))
-    sat.addImage(PIN_IMAGE_SECONDARY, pinImages.secondary, { pixelRatio: 2 });
-  if (!sat.hasImage(PIN_IMAGE_SELECTED))
-    sat.addImage(PIN_IMAGE_SELECTED, pinImages.selected, { pixelRatio: 2 });
-
-  addZoneOutlines(sat, zones);
-  addBuildingSource(sat, geojson);
-  addRouteLayers(sat);
-  addPinLayers(sat, geojson);
-}
-
 function addBuildingSource(map: maplibregl.Map, geojson: GeoJSON.FeatureCollection) {
   if (map.getSource(SOURCE_ID)) return;
   map.addSource(SOURCE_ID, { type: "geojson", data: geojson, promoteId: "building_id" });
+  // One label per catalog place, not one per disconnected footprint polygon.
+  map.addSource('campus-label-points', { type: 'geojson', data: buildPinFeatureCollection(geojson) });
+  map.addLayer({ id: 'building-hit-area', type: 'fill', source: SOURCE_ID,
+    filter: ['all', ['has', 'building_id'], ['!=', ['get', 'building_id'], 'building']],
+    paint: { 'fill-color': '#c89932', 'fill-opacity': 0.01 } });
   map.addLayer({
-    id: LAYER_LABELS, type: "symbol", source: SOURCE_ID, minzoom: LABEL_MIN_ZOOM,
+    id: LAYER_LABELS, type: "symbol", source: 'campus-label-points', minzoom: LABEL_MIN_ZOOM,
     filter: ["all", ["has", "building_id"], ["!=", ["get", "building_id"], "building"]],
     layout: {
       "text-field":            ["get", "name"],
@@ -353,7 +288,7 @@ function focusBuilding(
     map.flyTo({
       center:  coord,
       zoom:    BUILDING_FOCUS_ZOOM,
-      pitch:   0,
+      pitch: map.getPitch(),
       bearing: 0,
       padding: clampPadding(map, padding),
       duration: cameraDuration(animate ? 900 : 0, prefersReducedMotion()),
@@ -534,7 +469,7 @@ function syncPinSelection(map: maplibregl.Map, selectedId: string | null) {
   } catch { /* teardown */ }
 }
 
-// Route line + A/B endpoint markers, drawn above the satellite mask and below
+// Route line + A/B endpoint markers, drawn above imagery/models and below
 // the building pins so pins stay clickable over the route.
 function addRouteLayers(map: maplibregl.Map) {
   if (map.getSource(ROUTE_SOURCE)) return;
@@ -573,9 +508,10 @@ function syncRoute(map: maplibregl.Map, route: DirectionsResult | null) {
 function fitRouteBounds(map: maplibregl.Map, route: DirectionsResult, padding: PaddingOptions) {
   try {
     const [w, s, e, n] = bbox({ type: "Feature", geometry: route.geometry, properties: {} });
+    map.setPadding(clampPadding(map, padding));
     map.fitBounds([[w, s], [e, n]], {
-      padding: clampPadding(map, padding),
-      pitch:   0,
+      padding: 0,
+      pitch: map.getPitch(),
       bearing: 0,
       duration: cameraDuration(600, prefersReducedMotion()),
       maxZoom:  BUILDING_FOCUS_ZOOM,
@@ -625,6 +561,14 @@ function attachPinInteractions(
 
   let hideTimer: ReturnType<typeof setTimeout> | null = null;
   let hoveredMeta: GeoJsonBuildingMeta | null = null;
+  map.on('click', 'building-hit-area', (e: MapLayerMouseEvent) => {
+    if (map.getContainer().dataset.models === 'ready') return; // raycast once models are actually usable
+    if (map.queryRenderedFeatures(e.point, { layers: [LAYER_PINS, LAYER_PINS_SECONDARY, LAYER_PINS_SELECTED] }).length) return;
+    const meta = e.features?.[0] ? buildingMetaFromFeature(e.features[0]) : null;
+    if (meta) onSelect(meta.id, meta);
+  });
+  map.on('mouseenter', 'building-hit-area', () => { map.getCanvas().style.cursor = 'pointer'; });
+  map.on('mouseleave', 'building-hit-area', () => { map.getCanvas().style.cursor = ''; });
 
   function cancelHide() {
     if (hideTimer) {
@@ -657,13 +601,13 @@ function attachPinInteractions(
   }
 
   for (const layerId of [LAYER_PINS, LAYER_PINS_SECONDARY, LAYER_PINS_SELECTED]) {
-    map.on("click", layerId, (e) => {
+    map.on("click", layerId, (e: MapLayerMouseEvent) => {
       const f = e.features?.[0];
       const meta = f ? buildingMetaFromFeature(f) : null;
       if (meta) onSelect(meta.id, meta);
     });
 
-    map.on("mouseenter", layerId, (e) => {
+    map.on("mouseenter", layerId, (e: MapLayerMouseEvent) => {
       map.getCanvas().style.cursor = "pointer";
       const f = e.features?.[0];
       const meta = f ? buildingMetaFromFeature(f) : null;
@@ -685,6 +629,16 @@ function attachPinInteractions(
   }
 }
 
+/** MapLibre 6 requires WebGL2; older devices fail at construction. */
+function supportsWebGl2(): boolean {
+  try {
+    const canvas = document.createElement("canvas");
+    return Boolean(canvas.getContext("webgl2"));
+  } catch {
+    return false;
+  }
+}
+
 // ── GeoJSON cache ──────────────────────────────────────────────────────────────
 
 let cachedGeojson: GeoJSON.FeatureCollection | null = null;
@@ -692,6 +646,9 @@ let cachedGeojson: GeoJSON.FeatureCollection | null = null;
 async function loadCampusGeojson() {
   if (!cachedGeojson) {
     const res = await fetch("/buildings.geojson");
+    // A 404/500 previously fell through to res.json() and rejected with an
+    // opaque parse error inside async map setup.
+    if (!res.ok) throw new Error(`buildings.geojson: HTTP ${res.status}`);
     cachedGeojson = (await res.json()) as GeoJSON.FeatureCollection;
   }
   const centroids = new Map<string, [number, number]>();
@@ -710,8 +667,7 @@ export default function CampusMap({
   buildings,
   selectedId,
   onSelectBuilding,
-  leftPanelCollapsed = false,
-  rightSidebarOpen   = false,
+  mapInset           = NO_MAP_INSET,
   route              = null,
   userLocation       = null,
   onUserLocationChange,
@@ -720,41 +676,65 @@ export default function CampusMap({
   onCampusHomeClick,
   showAllCampusBuildings = false,
 }: CampusMapProps) {
+  const pathname = usePathname();
+  const [viewParam, setViewParam] = useUrlParam("view", { ownsParam: pathname === "/" });
+  const view = resolveMapView(viewParam);
+  const setViewRef = useRef(setViewParam);
+  useEffect(() => { setViewRef.current = setViewParam; }, [setViewParam]);
+  const [modelError, setModelError] = useState(false);
+  const [detailError, setDetailError] = useState(false);
+  const [styleReady, setStyleReady] = useState(false);
   const containerRef      = useRef<HTMLDivElement>(null);
   const mapRef            = useRef<maplibregl.Map | null>(null);
-  const satMapRef         = useRef<maplibregl.Map | null>(null);
-  const satDestroyRef     = useRef<(() => void) | null>(null);
   const layersReadyRef    = useRef(false);
   const prevSelectedIdRef = useRef<string | null>(null);
   const centroidsRef      = useRef<Map<string, [number, number]>>(new Map());
-  const paddingRef        = useRef(buildMapPadding(leftPanelCollapsed, rightSidebarOpen));
+  const paddingRef        = useRef(buildMapPadding(mapInset));
   const buildingsMapRef   = useRef<Map<string, Building>>(new Map());
   const routeRef          = useRef<DirectionsResult | null>(route);
   const userLocationRef   = useRef<UserLocation | null>(userLocation);
   const userMarkerRef     = useRef<maplibregl.Marker | null>(null);
   const cameraTokenRef    = useRef(0);
   const lastViewResetRef  = useRef(0);
+  const showAllRef = useRef(showAllCampusBuildings);
+  useEffect(() => { showAllRef.current = showAllCampusBuildings; }, [showAllCampusBuildings]);
 
-  paddingRef.current = buildMapPadding(leftPanelCollapsed, rightSidebarOpen);
-  routeRef.current = route;
-  userLocationRef.current = userLocation;
+  const [mapStatus, setMapStatus] = useState<MapStatus>("loading");
+  const [mapFailure, setMapFailure] = useState<MapFailure | null>(null);
+  // Bumping this tears down and rebuilds the map — the retry path.
+  const [initNonce, setInitNonce] = useState(0);
+  // The map's own "My location" control used to fail silently while the
+  // identical control in the directions panel reported errors.
+  const [locationError, setLocationError] = useState<string | null>(null);
 
   const onSelectRef = useRef(onSelectBuilding);
-  onSelectRef.current = onSelectBuilding;
-
   const onUserLocationChangeRef = useRef(onUserLocationChange);
-  onUserLocationChangeRef.current = onUserLocationChange;
 
+  // Mirror render-scoped props into refs so map event handlers (which outlive a
+  // render) always read current values. Declared before the camera effects below
+  // so those observe the fresh values on the same commit.
   useEffect(() => {
+    paddingRef.current = buildMapPadding(mapInset);
+    routeRef.current = route;
+    userLocationRef.current = userLocation;
+    onSelectRef.current = onSelectBuilding;
+    onUserLocationChangeRef.current = onUserLocationChange;
     buildingsMapRef.current = new Map(buildings.map((b) => [b.id, b]));
-  }, [buildings]);
+  }, [
+    mapInset,
+    route,
+    userLocation,
+    onSelectBuilding,
+    onUserLocationChange,
+    buildings,
+  ]);
 
   const resizeMap = useCallback(() => {
     const map = mapRef.current;
     if (!isMapReady(map)) return;
     try {
       map.resize();
-      satMapRef.current?.resize();
+
     } catch { /* mid-teardown */ }
   }, []);
 
@@ -763,19 +743,68 @@ export default function CampusMap({
     const container = containerRef.current;
     if (!container || mapRef.current) return;
 
-    let cancelled = false;
+    if (!supportsWebGl2()) {
+      setMapStatus("error");
+      setMapFailure("webgl-unsupported");
+      return;
+    }
+    if (!MAPTILER_KEY) {
+      setMapStatus("error");
+      setMapFailure("missing-key");
+      return;
+    }
 
-    const map = new maplibregl.Map({
+    let cancelled = false;
+    setStyleReady(false);
+
+    // v6 no longer embeds its worker. Its runtime relative-URL inference breaks
+    // after bundling into Next chunks: emit the standalone worker as an asset.
+    maplibregl.setWorkerUrl('/map-worker/maplibre-gl-worker.mjs');
+
+    let map: maplibregl.Map;
+    try { map = new maplibregl.Map({
       container,
       style:   MAP_STYLE,
       center:  INITIAL_CENTER,
       zoom:    INITIAL_ZOOM,
-      pitch:   0,
+      pitch: resolveMapView(new URLSearchParams(window.location.search).get('view')) === 'illustrated' ? 35 : 0,
       bearing: 0,
       minZoom: CAMPUS_MIN_ZOOM,
       maxZoom: CAMPUS_MAX_ZOOM,
       maxBounds: MAP_MAX_BOUNDS,
-    });
+      // Controlled north-up view. Only the view switch changes pitch.
+      maxPitch: 35,
+      pitchWithRotate: false,
+      dragRotate: false,
+      touchPitch: false,
+    }); } catch {
+      setMapStatus("error");
+      setMapFailure("unknown");
+      return;
+    }
+    map.touchZoomRotate.disableRotation();
+    map.keyboard.disableRotation();
+
+    const exposeCameraState = () => {
+      const host = map.getContainer();
+      host.dataset.mapZoom = map.getZoom().toFixed(2);
+      host.dataset.mapBearing = map.getBearing().toFixed(2);
+      host.dataset.mapPitch = map.getPitch().toFixed(2);
+      host.dataset.mapCenter = JSON.stringify(map.getCenter().toArray());
+      const selectedCoord = centroidsRef.current.get(prevSelectedIdRef.current ?? '');
+      if (selectedCoord) {
+        const screen = map.project(selectedCoord);
+        host.dataset.selectedScreen = JSON.stringify([screen.x, screen.y]);
+      }
+      if (layersReadyRef.current) {
+        host.dataset.mapFeatures = String(map.queryRenderedFeatures().length);
+        host.dataset.mapSourcesLoaded = String(map.areTilesLoaded());
+        host.dataset.routeFeatures = String(map.queryRenderedFeatures({ layers: [LAYER_ROUTE_LINE] }).length);
+      }
+    };
+    map.on("moveend", exposeCameraState);
+    map.on("idle", exposeCameraState);
+    exposeCameraState();
 
     mapRef.current       = map;
     layersReadyRef.current = false;
@@ -801,32 +830,11 @@ export default function CampusMap({
 
       const { zones } = getMaskZones(geojson);
 
-      // Full 2D basemap stays intact (roads, landuse). Campus aerial is a
-      // CSS-clipped overlay map so it never flattens surroundings to paper.
-      const overlay = mountSatelliteOverlay(map, zones);
-      if (overlay) {
-        satMapRef.current = overlay.sat;
-        satDestroyRef.current = overlay.destroy;
-        const wireSat = () => {
-          if (cancelled || !isMapReady(overlay.sat)) return;
-          mirrorOverlayDecorations(overlay.sat, geojson, zones, {
-            primary: pinImg,
-            secondary: pinSecondaryImg,
-            selected: pinSelectedImg,
-          });
-          syncSecondaryPinZoom(overlay.sat, false);
-          syncPinSelection(overlay.sat, prevSelectedIdRef.current);
-          syncRoute(overlay.sat, routeRef.current);
-        };
-        if (overlay.sat.isStyleLoaded()) wireSat();
-        else overlay.sat.once("load", wireSat);
-      }
-
       addZoneOutlines(map, zones);
       addBuildingSource(map, geojson);
       addRouteLayers(map);
       addPinLayers(map, geojson);
-      syncSecondaryPinZoom(map, false);
+      syncSecondaryPinZoom(map, showAllRef.current);
       attachPinInteractions(
         map,
         (id, meta) => onSelectRef.current(id, meta),
@@ -835,6 +843,8 @@ export default function CampusMap({
 
       centroidsRef.current = centroids;
       layersReadyRef.current = true;
+      setStyleReady(true);
+      markReady();
 
       map.resize();
       syncPinSelection(map, prevSelectedIdRef.current);
@@ -855,29 +865,74 @@ export default function CampusMap({
       requestAnimationFrame(() => {
         if (cancelled || !isMapReady(map)) return;
         map.resize();
-        void setupLayers();
+        void setupLayers().catch((err) => {
+          if (cancelled) return;
+          console.error("[map layers]", err);
+          setMapStatus("error");
+          setMapFailure("data-failed");
+        });
       });
     };
 
-    const onMapError = (e: { error?: Error }) => {
-      console.error("[map error]", e.error?.message ?? "unknown", { style: MAP_STYLE });
+    // MapLibre 6 events are class instances; its error payload is an ErrorLike,
+    // which is not structurally an Error.
+    const onMapError = (e: maplibregl.ErrorEvent) => {
+      const message = e.error?.message ?? "unknown";
+      console.error("[map error]", message.replace(/([?&](?:key|access_token)=)[^&\s]+/g, '$1[redacted]'));
+      // Individual tile errors are transient and self-healing; only a style
+      // that never loads leaves the user with an unusable surface.
+      // The readiness deadline below handles a style that never becomes usable.
     };
     map.on("error", onMapError);
+    const onContextLost = () => {
+      if (cancelled) return;
+      setMapStatus("error");
+      setMapFailure("context-lost");
+    };
+    map.on("webglcontextlost", onContextLost);
 
-    if (map.isStyleLoaded()) onLoad();
-    else map.once("load", onLoad);
+    let readyTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const markReady = () => {
+      if (cancelled) return;
+      clearTimeout(readyTimer);
+      setMapStatus("ready");
+      setMapFailure(null);
+    };
+
+    // Reveal on `style.load`, not `load`. `load` additionally waits for the
+    // first full render of every source; a single slow or stalled source then
+    // traps the user behind the loading overlay even though the basemap is
+    // interactive. Observed in headless WebGL, where `style.load` fires and
+    // `load` never does.
+    if (map.isStyleLoaded()) {
+      onLoad();
+    } else {
+      map.once("style.load", () => {
+        onLoad();
+      });
+      // Last-resort unveil: never leave a spinner up indefinitely when the map
+      // may in fact be usable.
+      readyTimer = setTimeout(() => {
+        if (!cancelled && !layersReadyRef.current) {
+          setMapStatus("error");
+          setMapFailure("style-failed");
+        }
+      }, 15_000);
+    }
 
     return () => {
       cancelled = true;
+      clearTimeout(readyTimer);
       layersReadyRef.current = false;
       map.off("error", onMapError);
-      satDestroyRef.current?.();
-      satDestroyRef.current = null;
-      satMapRef.current = null;
+      map.off("webglcontextlost", onContextLost);
+      map.off("moveend", exposeCameraState);
       map.remove(); // also detaches pin layer handlers and the hover popup
       mapRef.current = null;
     };
-  }, []);
+  // `initNonce` re-runs the whole lifecycle so "Try again" rebuilds the map.
+  }, [initNonce]);
 
   // ── Resize observers ───────────────────────────────────────────────────────
   useEffect(() => {
@@ -892,8 +947,6 @@ export default function CampusMap({
     const map = mapRef.current;
     if (!map || !layersReadyRef.current) return;
     syncSecondaryPinZoom(map, showAllCampusBuildings);
-    const sat = satMapRef.current;
-    if (sat && isMapReady(sat)) syncSecondaryPinZoom(sat, showAllCampusBuildings);
   }, [showAllCampusBuildings]);
 
   // ── Unified camera sync (single owner — avoids competing flyTo/fitBounds) ───
@@ -905,8 +958,6 @@ export default function CampusMap({
     }
 
     syncPinSelection(map, selectedId);
-    const sat = satMapRef.current;
-    if (sat && isMapReady(sat)) syncPinSelection(sat, selectedId);
     prevSelectedIdRef.current = selectedId;
 
     const token = ++cameraTokenRef.current;
@@ -921,7 +972,7 @@ export default function CampusMap({
         map.flyTo({
           center:   focusPoint,
           zoom:     ROUTE_STEP_ZOOM,
-          pitch:    0,
+          pitch: map.getPitch(),
           bearing:  0,
           padding:  clampPadding(map, padding),
           duration: cameraDuration(animate ? 600 : 0, prefersReducedMotion()),
@@ -951,10 +1002,61 @@ export default function CampusMap({
     selectedId,
     route,
     focusPoint,
-    leftPanelCollapsed,
-    rightSidebarOpen,
     viewResetNonce,
   ]);
+
+  // Overlay measurement changes padding without restarting flyTo on every resize.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !styleReady) return;
+    const timer = setTimeout(() => {
+      if (!isMapReady(map)) return;
+      if (!routeRef.current && !prevSelectedIdRef.current) fitCampusView(map, buildMapPadding(mapInset), false);
+      else map.easeTo({ padding: clampPadding(map, buildMapPadding(mapInset)), pitch: map.getContainer().dataset.mapView === 'illustrated' ? 35 : 0, duration: cameraDuration(200, prefersReducedMotion()) });
+    }, 100);
+    return () => clearTimeout(timer);
+  }, [mapInset, styleReady]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !styleReady || !isMapReady(map)) return;
+    let cancelled = false;
+    map.getContainer().dataset.mapView = view;
+    if (map.getLayer("illustrated-buildings")) map.removeLayer("illustrated-buildings");
+    if (!map.getSource("campus-satellite")) {
+      const tiles = satelliteTileURL();
+      if (tiles) {
+        map.addSource("campus-satellite", { type: "raster", tiles: [tiles], tileSize: 512, maxzoom: 20 });
+        map.addLayer({ id: "campus-satellite", type: "raster", source: "campus-satellite", layout: { visibility: "none" } }, LAYER_ZONE_OUTLINE);
+      }
+    }
+    if (map.getLayer("campus-satellite")) map.setLayoutProperty("campus-satellite", "visibility", view === "satellite" ? "visible" : "none");
+    setIllustratedGround(map, view === 'illustrated', 'building-hit-area');
+    map.setPaintProperty(LAYER_LABELS, "text-color", view === "satellite" ? "#ffffff" : "#293831");
+    map.setPaintProperty(LAYER_LABELS, "text-halo-color", view === "satellite" ? "#263128" : "#ffffff");
+    // Make the controlled angle a constraint, not an interruptible animation:
+    // wheel/pinch during a view change must not strand the map at 12° or 24°.
+    const pitch = view === 'illustrated' ? 35 : 0;
+    map.setMinPitch(0);
+    map.setMaxPitch(pitch);
+    map.setMinPitch(pitch);
+    map.jumpTo({ pitch, bearing: 0 });
+    if (view === "illustrated") {
+      void import("@/lib/illustrated-layer").then(({ createIllustratedLayer }) => {
+        if (cancelled || !isMapReady(map)) return;
+        map.addLayer(createIllustratedLayer(
+          () => { setModelError(false); setDetailError(false); },
+          () => { if (!cancelled) { setModelError(true); setViewRef.current("flat"); } },
+          (id) => {
+            const building = buildingsMapRef.current.get(id);
+            onSelectRef.current(id, { id, name: displayBuildingName(id, building?.name ?? id), code: building?.code ?? '' });
+          },
+          () => { if (!cancelled) setDetailError(true); },
+        ), LAYER_ROUTE_CASING);
+      }).catch(() => { if (!cancelled) { setModelError(true); setViewRef.current("flat"); } });
+    }
+    return () => { cancelled = true; };
+  }, [view, styleReady]);
 
   // ── Orientation-aware refit on window resize (debounced 300 ms) ────────────
   useEffect(() => {
@@ -979,8 +1081,6 @@ export default function CampusMap({
     const map = mapRef.current;
     if (!map || !layersReadyRef.current) return;
     syncRoute(map, route);
-    const sat = satMapRef.current;
-    if (sat && isMapReady(sat)) syncRoute(sat, route);
   }, [route]);
 
   // ── User location marker sync ───────────────────────────────────────────────
@@ -990,9 +1090,26 @@ export default function CampusMap({
     syncUserLocationMarker(map, userMarkerRef, userLocation);
   }, [userLocation]);
 
+  const retryMap = useCallback(() => {
+    setMapStatus("loading");
+    setMapFailure(null);
+    setInitNonce((n) => n + 1);
+  }, []);
+
   return (
     <div className="campus-map-container absolute inset-0">
-      <div ref={containerRef} className="h-full w-full" />
+      <div ref={containerRef} data-testid="map-host" className="h-full w-full" />
+
+      {modelError && view === 'flat' && <p role="status" className="absolute top-20 right-4 z-10 max-w-[calc(100%-2rem)] rounded-lg bg-white p-3 text-sm shadow">Illustrated view unavailable. Showing the flat map.</p>}
+      {detailError && view === 'illustrated' && <p role="status" className="absolute top-20 right-4 z-10 max-w-[calc(100%-2rem)] rounded-lg bg-white p-3 text-sm shadow">Facade details unavailable. Base buildings remain usable. Switch views to retry.</p>}
+      <div aria-label="Map appearance" className="absolute top-4 right-20 z-10 flex rounded-lg bg-white p-1 shadow">
+        {(["flat", "satellite", ...(ILLUSTRATED_ENABLED ? ["illustrated"] : [])] as const).map(option => (
+          <button key={option} type="button" aria-pressed={view === option} aria-label={option[0].toUpperCase() + option.slice(1)}
+            onClick={() => setViewParam(option)}
+            className={`min-h-11 rounded-md px-3 text-xs capitalize ${view === option ? "bg-amber-100 text-amber-950" : "text-gray-700"}`}>{option}</button>
+        ))}
+      </div>
+      <MapStatusOverlay status={mapStatus} failure={mapFailure} onRetry={retryMap} inset={mapInset} />
 
       {/* Map controls — top right */}
       <div className="absolute top-4 right-4 z-10 flex flex-col items-center gap-2">
@@ -1008,6 +1125,7 @@ export default function CampusMap({
             fitCampusView(map, paddingRef.current);
           }}
           title="Campus home"
+          aria-label="Campus home"
           className="map-control-btn"
         >
           <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -1018,13 +1136,15 @@ export default function CampusMap({
 
         <div className="map-control-group">
           <button type="button" onClick={() => mapRef.current?.zoomIn({ duration: cameraDuration(250, prefersReducedMotion()) })}
-            title="Zoom in" className="map-control-btn map-control-btn--grouped">
+            title="Zoom in"
+          aria-label="Zoom in" className="map-control-btn map-control-btn--grouped">
             <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
               <path strokeLinecap="round" d="M12 5v14M5 12h14" />
             </svg>
           </button>
           <button type="button" onClick={() => mapRef.current?.zoomOut({ duration: cameraDuration(250, prefersReducedMotion()) })}
-            title="Zoom out" className="map-control-btn map-control-btn--grouped border-t border-gray-200">
+            title="Zoom out"
+          aria-label="Zoom out" className="map-control-btn map-control-btn--grouped border-t border-gray-200">
             <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
               <path strokeLinecap="round" d="M5 12h14" />
             </svg>
@@ -1034,10 +1154,15 @@ export default function CampusMap({
         <button
           type="button"
           onClick={() => {
-            if (!navigator.geolocation) return;
+            if (!navigator.geolocation) {
+              setLocationError("Geolocation isn't supported on this device.");
+              return;
+            }
+            setLocationError(null);
             navigator.geolocation.getCurrentPosition(
               (pos) => {
                 const loc = { lng: pos.coords.longitude, lat: pos.coords.latitude };
+                setLocationError(null);
                 onUserLocationChangeRef.current?.(loc);
                 const map = mapRef.current;
                 if (isMapReady(map) && !routeRef.current) {
@@ -1048,11 +1173,19 @@ export default function CampusMap({
                   });
                 }
               },
-              (err) => console.error("[geolocation]", err.message),
+              (err) => {
+                console.error("[geolocation]", err.message);
+                setLocationError(
+                  err.code === err.PERMISSION_DENIED
+                    ? "Location access was denied — enable it in your browser to use this."
+                    : "Couldn't determine your location."
+                );
+              },
               { enableHighAccuracy: true, timeout: 8000 },
             );
           }}
           title="My location"
+          aria-label="My location"
           className="map-control-btn"
         >
           <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -1061,6 +1194,22 @@ export default function CampusMap({
             <path strokeLinecap="round" d="M12 2v3m0 14v3M2 12h3m14 0h3" />
           </svg>
         </button>
+
+        {locationError && (
+          <div
+            role="alert"
+            className="max-w-[220px] rounded-lg bg-white/95 px-3 py-2 text-[11px] leading-snug text-gray-700 shadow-lg ring-1 ring-black/5"
+          >
+            {locationError}
+            <button
+              type="button"
+              onClick={() => setLocationError(null)}
+              className="mt-1 block text-[10px] font-semibold text-gray-400 hover:text-gray-700"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -3,6 +3,13 @@ import { CAMPUS_BUILDINGS } from "@/lib/campus-data";
 import { RESEARCHERS } from "@/lib/researcher-data";
 import { getLocalAssistantReply } from "@/lib/local-assistant";
 import { createOpenAIClient } from "@/lib/openai-client";
+import {
+  CHAT_LIMITS,
+  clientKeyFromHeaders,
+  forwardableMessages,
+  parseChatMessages,
+  rateLimit,
+} from "@/lib/chat-guard";
 
 const SYSTEM_PROMPT = `You are UAPB Atlas — an intelligent campus research assistant for the University of Arkansas at Pine Bluff (UAPB). You help students, faculty, visitors, and potential partners explore the university's research ecosystem through an interactive 3D campus map.
 
@@ -54,14 +61,39 @@ function isOpenAIAuthError(error: unknown): boolean {
 
 export async function POST(req: NextRequest) {
   try {
-    const { messages } = await req.json();
-
-    if (!Array.isArray(messages) || messages.length === 0) {
-      return NextResponse.json({ error: "Invalid messages" }, { status: 400 });
+    const limit = rateLimit(clientKeyFromHeaders(req.headers));
+    if (!limit.allowed) {
+      return NextResponse.json(
+        { error: "Too many requests. Please wait a moment and try again." },
+        { status: 429, headers: { "Retry-After": String(limit.retryAfterSeconds) } }
+      );
     }
 
+    const declaredLength = Number(req.headers.get("content-length") ?? 0);
+    if (declaredLength > CHAT_LIMITS.maxBodyBytes) {
+      return NextResponse.json({ error: "Request body is too large." }, { status: 413 });
+    }
+
+    const rawBody = await req.text();
+    if (rawBody.length > CHAT_LIMITS.maxBodyBytes) {
+      return NextResponse.json({ error: "Request body is too large." }, { status: 413 });
+    }
+
+    let body: unknown;
+    try {
+      body = JSON.parse(rawBody);
+    } catch {
+      return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
+    }
+
+    const parsed = parseChatMessages(body);
+    if (!parsed.ok) {
+      return NextResponse.json({ error: parsed.error }, { status: parsed.status });
+    }
+    const messages = parsed.messages;
+
     const lastUser = [...messages].reverse().find((m) => m.role === "user");
-    const userText = typeof lastUser?.content === "string" ? lastUser.content : "";
+    const userText = lastUser?.content ?? "";
 
     const openai = createOpenAIClient();
 
@@ -71,12 +103,20 @@ export async function POST(req: NextRequest) {
     }
 
     try {
-      const completion = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
-        messages: [{ role: "system", content: SYSTEM_PROMPT }, ...messages],
-        max_tokens: 400,
-        temperature: 0.7,
-      });
+      const completion = await openai.chat.completions.create(
+        {
+          model: "gpt-4o-mini",
+          // Validated user/assistant turns only — a caller cannot inject a
+          // `system` message that would land after (and override) SYSTEM_PROMPT.
+          messages: [
+            { role: "system", content: SYSTEM_PROMPT },
+            ...forwardableMessages(messages),
+          ],
+          max_tokens: 400,
+          temperature: 0.7,
+        },
+        { signal: AbortSignal.timeout(CHAT_LIMITS.upstreamTimeoutMs) }
+      );
 
       const reply =
         completion.choices[0]?.message?.content ??

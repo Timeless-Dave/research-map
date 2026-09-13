@@ -12,7 +12,7 @@ export default function ExplorerShell({ children }: { children: React.ReactNode 
   const onDirectory = pathname.startsWith("/directory");
 
   return (
-    <div className="h-screen w-screen overflow-hidden relative bg-gray-50">
+    <div className="h-[100dvh] w-full overflow-hidden relative bg-gray-50">
       <div
         className={
           onDirectory
@@ -20,6 +20,7 @@ export default function ExplorerShell({ children }: { children: React.ReactNode 
             : "absolute inset-0"
         }
         aria-hidden={onDirectory}
+        inert={onDirectory}
       >
         <CampusExplorer />
       </div>

@@ -19,12 +19,10 @@ interface ProfileCardProps {
 
 export default function ProfileCard({ researcher: r, onOpen }: ProfileCardProps) {
   return (
-    <button
-      type="button"
-      onClick={onOpen}
+    <article
       className="group text-left w-full rounded-2xl border border-gray-200 bg-white p-4 hover:border-amber-300 hover:shadow-lg transition-all"
     >
-      <div className="flex items-start gap-3">
+      <button type="button" onClick={(e) => { e.currentTarget.focus(); onOpen(); }} className="flex w-full items-start gap-3 text-left rounded-lg focus-visible:outline-2 focus-visible:outline-amber-500">
         <div className="h-11 w-11 shrink-0 rounded-xl bg-[#EEB310]/15 flex items-center justify-center text-amber-700 font-bold text-sm overflow-hidden">
           {r.photo_url ? (
             // eslint-disable-next-line @next/next/no-img-element
@@ -38,7 +36,7 @@ export default function ProfileCard({ researcher: r, onOpen }: ProfileCardProps)
           {r.title && <p className="text-[11px] text-gray-500 truncate">{r.title}</p>}
           {r.department && <p className="text-[10px] text-gray-400 truncate">{r.department}</p>}
         </div>
-      </div>
+      </button>
 
       <div className="mt-3 flex flex-wrap items-center gap-1.5">
         {r.building_name && (
@@ -58,12 +56,12 @@ export default function ProfileCard({ researcher: r, onOpen }: ProfileCardProps)
       </div>
 
       {/* Hover reveal — bio snippet, collapses to 0 height until hovered/focused */}
-      <div className="grid grid-rows-[0fr] group-hover:grid-rows-[1fr] group-focus-visible:grid-rows-[1fr] transition-[grid-template-rows] duration-200 ease-out">
+      <div className="grid grid-rows-[0fr] group-hover:grid-rows-[1fr] group-focus-within:grid-rows-[1fr] transition-[grid-template-rows] duration-200 ease-out">
         <div className="overflow-hidden">
           {r.bio && <p className="mt-3 pt-3 border-t border-gray-100 text-[11px] text-gray-500 leading-relaxed line-clamp-3">{r.bio}</p>}
           <p className="mt-2 text-[10px] font-semibold text-[#EEB310]">{PROFILE_VIEW}</p>
         </div>
       </div>
-    </button>
+    </article>
   );
 }

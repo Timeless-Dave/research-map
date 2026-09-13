@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
+import { boundedChatHistory } from '@/lib/chat-history';
+import { CHAT_LIMITS } from '@/lib/chat-guard';
 
 interface Message {
   role: "user" | "assistant";
@@ -29,15 +31,22 @@ function AtlasIcon({ className }: { className?: string }) {
 
 const TYPING_DOTS = ["·", "··", "···"];
 
+const GREETING: Message = {
+  role: "assistant",
+  content:
+    "Hi! I'm **UAPB Atlas**, your campus research guide. I can help you explore buildings, grants, researchers, and departments. What would you like to know?",
+};
+
 export default function AIAssistant() {
   const [open, setOpen] = useState(false);
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<Message[]>([GREETING]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [typingFrame, setTypingFrame] = useState(0);
-  const [hasGreeted, setHasGreeted] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const requestRef = useRef<AbortController | null>(null);
+  useEffect(() => () => requestRef.current?.abort(), []);
 
   // Scroll to bottom on new messages
   useEffect(() => {
@@ -51,25 +60,18 @@ export default function AIAssistant() {
     return () => clearInterval(t);
   }, [loading]);
 
-  // Add greeting when first opened
+  // Focus the composer when the panel opens.
   useEffect(() => {
-    if (open && !hasGreeted) {
-      setHasGreeted(true);
-      setMessages([
-        {
-          role: "assistant",
-          content:
-            "Hi! I'm **UAPB Atlas**, your campus research guide. I can help you explore buildings, grants, researchers, and departments. What would you like to know?",
-        },
-      ]);
-    }
     if (open) inputRef.current?.focus();
-  }, [open, hasGreeted]);
+  }, [open]);
 
   const sendMessage = useCallback(
     async (text: string) => {
       const userMessage = text.trim();
-      if (!userMessage || loading) return;
+      if (!userMessage || loading || requestRef.current) return;
+      const controller = new AbortController();
+      requestRef.current = controller;
+      const deadline = setTimeout(() => controller.abort(), 30000);
 
       const newMessages: Message[] = [
         ...messages,
@@ -83,11 +85,9 @@ export default function AIAssistant() {
         const res = await fetch("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
+          signal: controller.signal,
           body: JSON.stringify({
-            messages: newMessages.map((m) => ({
-              role: m.role,
-              content: m.content,
-            })),
+            messages: boundedChatHistory(newMessages),
           }),
         });
 
@@ -116,9 +116,11 @@ export default function AIAssistant() {
       } catch {
         setMessages((prev) => [
           ...prev,
-          { role: "assistant", content: "Network error. Please check your connection and try again." },
+          { role: "assistant", content: controller.signal.aborted ? "The reply timed out. Please try again." : "Network error. Please check your connection and try again." },
         ]);
       } finally {
+        clearTimeout(deadline);
+        requestRef.current = null;
         setLoading(false);
       }
     },
@@ -162,8 +164,9 @@ export default function AIAssistant() {
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        aria-label="Open UAPB Atlas AI assistant"
-        className={`fixed bottom-6 right-6 z-50 h-14 w-14 rounded-full shadow-2xl flex items-center justify-center transition-all duration-300 overflow-hidden border-2 ${
+        aria-label={open ? "Close UAPB Atlas AI assistant" : "Open UAPB Atlas AI assistant"}
+        aria-expanded={open}
+        className={`fixed z-50 h-14 w-14 rounded-full shadow-2xl flex items-center justify-center transition-all duration-300 motion-reduce:transition-none overflow-hidden border-2 max-md:top-20 max-md:left-4 md:bottom-6 md:right-6 ${
           open
             ? "bg-gray-800 border-gray-600 rotate-0"
             : "border-[#EEB310] bg-black hover:scale-110 hover:shadow-[#EEB310]/30"
@@ -180,12 +183,18 @@ export default function AIAssistant() {
 
       {/* Unread pulse */}
       {!open && messages.length === 0 && (
-        <span className="fixed bottom-[4.75rem] right-5 z-50 h-3 w-3 rounded-full bg-green-500 border-2 border-white shadow animate-pulse" />
+        <span className="fixed z-50 h-3 w-3 rounded-full bg-green-500 border-2 border-white shadow animate-pulse motion-reduce:animate-none max-md:top-[4.5rem] max-md:left-[3.5rem] md:bottom-[4.75rem] md:right-5" />
       )}
 
       {/* Chat panel */}
       <div
-        className={`fixed bottom-24 right-6 z-50 w-[min(360px,calc(100vw-3rem))] max-h-[min(560px,calc(100vh-7rem))] flex flex-col bg-gray-900 rounded-2xl shadow-2xl border border-white/10 overflow-hidden transition-all duration-300 origin-bottom-right ${
+        // `inert` removes the hidden panel from the tab order and the
+        // accessibility tree; opacity-0 alone left its controls focusable.
+        inert={!open}
+        aria-hidden={!open}
+        role="dialog"
+        aria-label="UAPB Atlas research assistant"
+        className={`fixed z-50 max-md:top-36 max-md:left-4 md:bottom-24 md:right-6 w-[min(360px,calc(100vw-3rem))] max-h-[min(560px,calc(100dvh-7rem))] flex flex-col bg-gray-900 rounded-2xl shadow-2xl border border-white/10 overflow-hidden transition-all duration-300 motion-reduce:transition-none max-md:origin-top-left md:origin-bottom-right ${
           open ? "scale-100 opacity-100" : "scale-90 opacity-0 pointer-events-none"
         }`}
       >
@@ -204,7 +213,7 @@ export default function AIAssistant() {
           <div className="ml-auto flex items-center gap-1">
             <button
               type="button"
-              onClick={() => { setMessages([]); setHasGreeted(false); }}
+              onClick={() => setMessages([GREETING])}
               title="Clear chat"
               className="p-1.5 rounded-lg text-white/30 hover:text-white/70 hover:bg-white/10 transition-colors"
             >
@@ -279,6 +288,7 @@ export default function AIAssistant() {
             className="flex items-center gap-2 bg-white/8 border border-white/10 rounded-xl px-3 py-1.5 focus-within:border-[#EEB310]/50 transition-colors"
           >
             <input
+              maxLength={CHAT_LIMITS.maxMessageChars}
               ref={inputRef}
               type="text"
               value={input}

@@ -1,4 +1,6 @@
-import maplibregl, { type StyleSpecification } from "maplibre-gl";
+// MapLibre 6 is ESM-only and no longer ships a default export.
+import * as maplibregl from "maplibre-gl";
+import type { StyleSpecification } from "maplibre-gl";
 import type { Zone } from "@/lib/campus-mask";
 
 /** Minimal satellite style — transparent outside tiles; clipped by CSS path. */

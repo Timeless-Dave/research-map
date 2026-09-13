@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { getResearchSeed } from "@/lib/research-seed";
 import { querySupabase } from "@/lib/supabase-server";
+import { isKnownPlaceId } from "@/lib/campus-places.generated";
+import { BUILDINGS_SEED } from "@/lib/buildings-seed";
 import type { ResearchProject, Researcher } from "@/types";
 
 export async function GET(
@@ -8,6 +10,12 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id: buildingId } = await params;
+
+  // Unknown ids previously returned 200 with empty arrays, which made an
+  // arbitrary `?building=` deep link look like a real but empty place.
+  if (!isKnownBuildingId(buildingId)) {
+    return NextResponse.json({ error: "Building not found" }, { status: 404 });
+  }
 
   const [projects, researchers] = await Promise.all([
     querySupabase((client) =>
@@ -43,4 +51,9 @@ export async function GET(
   };
 
   return NextResponse.json(payload);
+}
+
+function isKnownBuildingId(id: string): boolean {
+  if (isKnownPlaceId(id)) return true;
+  return BUILDINGS_SEED.some((b) => b.id === id);
 }

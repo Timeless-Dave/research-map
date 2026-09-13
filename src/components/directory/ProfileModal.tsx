@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import Link from "next/link";
 import type { DirectoryResearcher } from "@/lib/research-seed";
 import { PROFILE_VIEW_ON_MAP } from "@/lib/ui-copy";
@@ -20,23 +20,37 @@ interface ProfileModalProps {
 }
 
 export default function ProfileModal({ researcher: r, onClose }: ProfileModalProps) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+    const previous = document.activeElement;
+    const dialog = dialogRef.current;
+    dialog?.showModal();
+    return () => {
+      dialog?.close();
+      if (previous instanceof HTMLElement && previous.isConnected) previous.focus();
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, []);
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
-      onClick={onClose}
+    <dialog
+      ref={dialogRef}
+      aria-label={`Profile for ${r.name}`}
+      className="fixed inset-0 m-auto w-full max-w-lg max-h-[85vh] rounded-2xl border-0 p-0 bg-transparent backdrop:bg-black/40"
+      onCancel={(e) => { e.preventDefault(); onClose(); }}
+      onKeyDown={(e) => {
+        if (e.key !== 'Tab') return;
+        const controls = Array.from(e.currentTarget.querySelectorAll<HTMLElement>('button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex="0"]')).filter(el => el.getClientRects().length > 0);
+        if (!controls.length) return;
+        // WebKit can skip links under its default keyboard preference. Own the
+        // cycle explicitly so every action remains reachable in every engine.
+        e.preventDefault();
+        const index = controls.indexOf(document.activeElement as HTMLElement);
+        const next = index < 0 ? (e.shiftKey ? controls.length - 1 : 0) : (index + (e.shiftKey ? -1 : 1) + controls.length) % controls.length;
+        controls[next].focus();
+      }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={`Profile for ${r.name}`}
         onClick={(e) => e.stopPropagation()}
         className="w-full max-w-lg max-h-[85vh] overflow-y-auto rounded-2xl bg-white shadow-2xl"
       >
@@ -179,6 +193,6 @@ export default function ProfileModal({ researcher: r, onClose }: ProfileModalPro
           )}
         </div>
       </div>
-    </div>
+    </dialog>
   );
 }

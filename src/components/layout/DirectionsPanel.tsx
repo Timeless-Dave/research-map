@@ -1,9 +1,11 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Building } from "@/types";
 import {
   getRoute,
+  getRouteWithHandoff,
+  DIRECTIONS_TIMEOUT_MS,
   formatDistance,
   formatDuration,
   DirectionsError,
@@ -11,12 +13,21 @@ import {
   type TravelProfile,
 } from "@/lib/directions";
 import type { UserLocation } from "@/components/map/CampusMap";
+import { getCampusPlace } from "@/lib/campus-places.generated";
+import { buildPlaceCatalog } from "@/lib/place-catalog";
+import {
+  describeTarget,
+  hasVerifiedAccessibleEntrance,
+  planDrivingHandoff,
+  resolveDestination,
+  resolveOrigin,
+  type RouteMode,
+} from "@/lib/place-anchors";
 
 export const MY_LOCATION = "__my_location__";
 
 interface DirectionsPanelProps {
   buildings: Building[];
-  selectedId: string | null;
   route: DirectionsResult | null;
   onRouteChange: (route: DirectionsResult | null) => void;
   userLocation: UserLocation | null;
@@ -32,11 +43,39 @@ function buildingCoord(b: Building): [number, number] {
   return [b.lng, b.lat];
 }
 
+/**
+ * Every addressable campus place is routable, not just the ones the API seeds.
+ * Seeded buildings win because their coordinates are curated; the rest fall back
+ * to the footprint coordinate generated from buildings.geojson.
+ */
+function resolveCoord(
+  id: string,
+  buildings: Building[],
+  userLocation: UserLocation | null,
+  mode: RouteMode
+): [number, number] | null {
+  if (id === MY_LOCATION) return userLocation ? [userLocation.lng, userLocation.lat] : null;
+  // Leaving a place should start from its departure point, not its centre.
+  const origin = resolveOrigin(id, mode);
+  if (origin && !origin.approximate) return origin.coord;
+  const seeded = buildings.find((b) => b.id === id);
+  if (seeded) return buildingCoord(seeded);
+  const place = getCampusPlace(id);
+  return place ? [place.lng, place.lat] : null;
+}
+
 const MAPBOX_CONFIGURED = Boolean(process.env.NEXT_PUBLIC_MAPBOX_TOKEN);
+
+const MODE_LABEL: Record<RouteMode, string> = {
+  walking: "Walk",
+  driving: "Drive",
+  // Names the destination, not the route. The path is routed on the ordinary
+  // walking profile and has no verified accessibility attributes.
+  accessible: "Accessible entrance",
+};
 
 export default function DirectionsPanel({
   buildings,
-  selectedId,
   route,
   onRouteChange,
   userLocation,
@@ -47,23 +86,56 @@ export default function DirectionsPanel({
   onFromIdChange,
   onToIdChange,
 }: DirectionsPanelProps) {
-  const [profile, setProfile] = useState<TravelProfile>("walking");
+  // Offered only where an accessible entrance has actually been confirmed for
+  // the destination. Offering it everywhere and quietly falling back to a
+  // guessed door would be guidance someone could get hurt following.
+  const availableModes = useMemo<RouteMode[]>(() => {
+    const modes: RouteMode[] = ["walking", "driving"];
+    if (toId && toId !== MY_LOCATION && hasVerifiedAccessibleEntrance(toId)) {
+      modes.push("accessible");
+    }
+    return modes;
+  }, [toId]);
+
+  const [requestedProfile, setProfile] = useState<RouteMode>("walking");
+  // Derived, not synced: changing the destination to one with no confirmed
+  // accessible entrance must drop accessible mode without an effect round-trip.
+  const profile = availableModes.includes(requestedProfile) ? requestedProfile : "walking";
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [locating, setLocating] = useState(false);
 
-  const lastAppliedSelection = useRef<string | null>(null);
+  // Only the most recent directions request may install a route. Without this,
+  // changing the destination mid-flight let the previous response overwrite it,
+  // leaving the drawn line disagreeing with the selects.
+  const requestRef = useRef<AbortController | null>(null);
+  useEffect(() => () => requestRef.current?.abort(), []);
 
-  // Pin click fills empty slot — destination first, then origin.
+  const cancelPendingRequest = () => {
+    requestRef.current?.abort();
+    requestRef.current = null;
+    setLoading(false);
+  };
+
+  // Endpoints can also change from a map-pin click in the parent, not only
+  // through these selects. Invalidate that request path as well.
   useEffect(() => {
-    if (!selectedId || selectedId === lastAppliedSelection.current) return;
-    lastAppliedSelection.current = selectedId;
-    if (!toId) {
-      onToIdChange(selectedId);
-    } else if (!fromId) {
-      onFromIdChange(selectedId);
-    }
-  }, [selectedId, fromId, toId, onFromIdChange, onToIdChange]);
+    requestRef.current?.abort();
+  }, [fromId, toId, profile]);
+
+  // Seeded buildings first (curated names/coords), then every other campus
+  // place from the generated catalog so secondary buildings are selectable.
+  const routableOptions = useMemo(
+    () =>
+      buildPlaceCatalog(buildings)
+        .map((p) => ({ id: p.id, name: p.name }))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    [buildings]
+  );
+
+  // Endpoint assignment from map selection is owned by CampusExplorer
+  // (`handleSelectBuilding`); reacting to `selectedId` here as well made a
+  // single pin click populate both From and To depending on effect order.
 
   // Clear stale route when both endpoints are cleared.
   useEffect(() => {
@@ -99,10 +171,7 @@ export default function DirectionsPanel({
   };
 
   const swapEndpoints = () => {
-    if (fromId === MY_LOCATION) {
-      setError("Can't swap when starting from your current location.");
-      return;
-    }
+    cancelPendingRequest();
     const prevFrom = fromId;
     onFromIdChange(toId);
     onToIdChange(prevFrom);
@@ -116,40 +185,91 @@ export default function DirectionsPanel({
       return;
     }
 
-    const fromCoord =
-      fromId === MY_LOCATION
+    const fromCoord = resolveCoord(fromId, buildings, userLocation, profile);
+    const destination =
+      toId === MY_LOCATION
         ? userLocation
-          ? ([userLocation.lng, userLocation.lat] as [number, number])
+          ? { coord: [userLocation.lng, userLocation.lat] as [number, number], via: "centroid" as const, approximate: false, unverified: false }
           : null
-        : buildings.find((b) => b.id === fromId)
-          ? buildingCoord(buildings.find((b) => b.id === fromId)!)
-          : null;
-    const toBuilding = buildings.find((b) => b.id === toId);
+        : resolveDestination(toId, profile);
 
-    if (!fromCoord || !toBuilding) {
-      setError("Choose both a starting point and a destination.");
+    if (!fromCoord || !destination) {
+      setError(
+        profile === "accessible" && toId
+          ? "No confirmed accessible entrance for that destination yet."
+          : "Choose both a starting point and a destination."
+      );
       return;
     }
+
+    if (fromId === toId) {
+      setError("Choose two different places.");
+      return;
+    }
+
+    // Routed on the ordinary walking network — the only difference is that it
+    // terminates at a confirmed accessible entrance. The path itself is not
+    // verified as step-free, so nothing in the UI may claim that it is.
+    const apiProfile: TravelProfile = profile === "driving" ? "driving" : "walking";
+    const handoff =
+      profile === "driving" && toId !== MY_LOCATION ? planDrivingHandoff(toId) : null;
+
+    requestRef.current?.abort();
+    const controller = new AbortController();
+    requestRef.current = controller;
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, DIRECTIONS_TIMEOUT_MS);
 
     setLoading(true);
     setError(null);
     try {
-      const result = await getRoute(fromCoord, buildingCoord(toBuilding), profile);
-      onRouteChange(result);
+      const result = handoff
+        ? await getRouteWithHandoff(
+            fromCoord,
+            handoff.drive.coord,
+            handoff.walk.coord,
+            {
+              drive: `Drive to ${describeTarget(handoff.drive)}`,
+              walk: `Walk to ${describeTarget(handoff.walk)}`,
+            },
+            controller.signal
+          )
+        : await getRoute(fromCoord, destination.coord, apiProfile, controller.signal);
+      if (controller.signal.aborted) return;
+      onRouteChange({
+        ...result,
+        destinationLabel: describeTarget(handoff ? handoff.walk : destination),
+      });
     } catch (err) {
+      // A superseded request must not clear the newer one's state. A timeout is
+      // different: it needs an actionable message instead of failing silently.
+      if (controller.signal.aborted && !timedOut) return;
       onRouteChange(null);
-      setError(err instanceof DirectionsError ? err.message : "Couldn't get directions. Please try again.");
+      setError(
+        timedOut
+          ? "Directions took too long. Check your connection and try again."
+          : err instanceof DirectionsError
+            ? err.message
+            : "Couldn't get directions. Please try again."
+      );
     } finally {
-      setLoading(false);
+      clearTimeout(timeout);
+      if (requestRef.current === controller) {
+        requestRef.current = null;
+        setLoading(false);
+      }
     }
   };
 
   const clearRoute = () => {
+    cancelPendingRequest();
     onRouteChange(null);
     onFromIdChange("");
     onToIdChange("");
     setError(null);
-    lastAppliedSelection.current = null;
   };
 
   return (
@@ -166,7 +286,7 @@ export default function DirectionsPanel({
           <button
             type="button"
             onClick={swapEndpoints}
-            disabled={!fromId || !toId || fromId === MY_LOCATION}
+            disabled={!fromId || !toId}
             title="Swap start and destination"
             className="p-1 rounded text-gray-400 hover:text-[#EEB310] disabled:opacity-30 transition-colors"
           >
@@ -182,6 +302,7 @@ export default function DirectionsPanel({
             <select
               value={fromId}
               onChange={(e) => {
+                cancelPendingRequest();
                 onFromIdChange(e.target.value);
                 onRouteChange(null);
               }}
@@ -189,8 +310,8 @@ export default function DirectionsPanel({
             >
               <option value="">Select a building…</option>
               {userLocation && <option value={MY_LOCATION}>My current location</option>}
-              {buildings.map((b) => (
-                <option key={b.id} value={b.id}>{b.name}</option>
+              {routableOptions.map((p) => (
+                <option key={p.id} value={p.id}>{p.name}</option>
               ))}
             </select>
             <button
@@ -213,29 +334,39 @@ export default function DirectionsPanel({
           <select
             value={toId}
             onChange={(e) => {
+              cancelPendingRequest();
               onToIdChange(e.target.value);
               onRouteChange(null);
             }}
             className="mt-1 w-full bg-gray-50 border border-gray-200 rounded-lg px-2 py-1.5 text-[12px] text-gray-800 outline-none focus:border-[#EEB310] focus:bg-white transition-all"
           >
             <option value="">Select a building…</option>
-            {buildings.map((b) => (
-              <option key={b.id} value={b.id}>{b.name}</option>
+            {userLocation && <option value={MY_LOCATION}>My current location</option>}
+            {routableOptions.map((p) => (
+              <option key={p.id} value={p.id}>{p.name}</option>
             ))}
           </select>
         </label>
 
         <div className="flex items-center gap-1 rounded-lg bg-gray-50 border border-gray-200 p-0.5">
-          {(["walking", "driving"] as const).map((p) => (
+          {availableModes.map((p) => (
             <button
               key={p}
               type="button"
-              onClick={() => setProfile(p)}
+              onClick={() => {
+                if (p === profile) return;
+                cancelPendingRequest();
+                setProfile(p);
+                // The drawn line is mode-specific; keeping it would show a
+                // walking path labelled as a drive.
+                onRouteChange(null);
+                setError(null);
+              }}
               className={`flex-1 py-1.5 rounded-md text-[11px] font-semibold capitalize transition-colors ${
                 profile === p ? "bg-white text-amber-700 shadow-sm" : "text-gray-400 hover:text-gray-600"
               }`}
             >
-              {p === "walking" ? "Walk" : "Drive"}
+              {MODE_LABEL[p]}
             </button>
           ))}
         </div>
@@ -249,20 +380,50 @@ export default function DirectionsPanel({
           {loading ? "Getting directions…" : "Get Directions"}
         </button>
 
-        {error && <p className="text-[11px] text-red-500">{error}</p>}
+        {/* Directions state is announced: the route line and step list are
+            visual-only feedback for a screen-reader user. */}
+        <p role="status" aria-live="polite" className="sr-only">
+          {loading
+            ? "Getting directions…"
+            : error
+              ? error
+              : route
+                ? `Route found: ${route.steps.length} steps, ending at ${route.destinationLabel ?? "the destination"}.`
+                : ""}
+        </p>
+        {error && (
+          <p className="text-[11px] text-red-500">{error}</p>
+        )}
       </div>
 
       <div className="flex-1 overflow-y-auto min-h-0">
         {route ? (
           <div className="px-4 py-3">
+            {route.handoffGapMeters !== undefined && (
+              <p role="status" className="mb-3 rounded-lg bg-amber-50 p-3 text-xs text-amber-900">
+                Parking transition unverified. Driving and walking routes are snapped separately
+                {route.handoffGapMeters > 1 ? ` (${Math.round(route.handoffGapMeters)} m apart)` : ''}.
+                No connecting path is shown or guaranteed.
+              </p>
+            )}
             <div className="flex items-center justify-between mb-3">
               <div>
                 <p className="text-sm font-bold text-gray-900">
                   {formatDistance(route.distanceMeters)} · {formatDuration(route.durationSeconds)}
                 </p>
                 <p className="text-[10px] text-gray-400 uppercase tracking-wider">
-                  {route.profile === "walking" ? "Walking" : "Driving"} directions
+                  {route.segments
+                    ? "Drive then walk"
+                    : `${route.profile === "walking" ? "Walking" : "Driving"} directions`}
                 </p>
+                {/* Say what the route actually ends at. A centroid destination
+                    is "near the building", not "at the door", and an imported
+                    anchor nobody has checked says so. */}
+                {route.destinationLabel && (
+                  <p className="text-[10px] text-gray-500 mt-0.5">
+                    Ends at {route.destinationLabel}
+                  </p>
+                )}
               </div>
               <button
                 type="button"
@@ -272,6 +433,22 @@ export default function DirectionsPanel({
                 Clear
               </button>
             </div>
+
+            {route.segments && (
+              <ul className="mb-3 space-y-1 rounded-lg bg-gray-50 px-3 py-2">
+                {route.segments.map((seg) => (
+                  <li
+                    key={seg.label}
+                    className="flex items-center justify-between text-[11px] text-gray-600"
+                  >
+                    <span>{seg.label}</span>
+                    <span className="font-medium text-gray-500">
+                      {formatDistance(seg.distanceMeters)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
 
             <ol className="space-y-1">
               {route.steps.map((step, i) => (
