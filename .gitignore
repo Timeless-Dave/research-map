@@ -48,3 +48,11 @@ Campus Map _ Baylor University_files/
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# playwright
+/test-results/
+/playwright-report/
+/blob-report/
+
+# local capture evidence and debug recordings
+/artifacts/

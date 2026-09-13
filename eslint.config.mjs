@@ -12,6 +12,15 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+
+    // Static assets and vendored bundles — not source we own.
+    "public/**",
+    "node_modules/**",
+    "coverage/**",
+
+    // Local reference scrapes (see .gitignore).
+    "Campus Map _ Baylor University.html",
+    "Campus Map _ Baylor University_files/**",
   ]),
 ]);
 

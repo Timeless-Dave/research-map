@@ -4,33 +4,47 @@
   "private": true,
   "packageManager": "pnpm@11.1.2",
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
+    "dev": "node scripts/prepare-map-worker.mjs && next dev",
+    "build": "node scripts/prepare-map-worker.mjs && next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "vitest run"
-  },
-  "pnpm": {
-    "ignoredBuiltDependencies": [
-      "@vaadin/vaadin-usage-statistics"
-    ]
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "audit": "pnpm audit --prod",
+    "generate:places": "node scripts/generate-campus-places.mjs",
+    "verify": "pnpm run typecheck && pnpm run lint && pnpm run test && pnpm run validate:anchors && pnpm run check:assets && pnpm run check:illustrated && pnpm run build",
+    "optimize:images": "node scripts/optimize-images.mjs",
+    "check:assets": "node scripts/check-asset-budget.mjs",
+    "test:e2e": "playwright test",
+    "test:e2e:install": "playwright install --with-deps chromium webkit",
+    "import:anchors": "node --experimental-strip-types scripts/import-osm-anchors.mjs",
+    "validate:anchors": "node --experimental-strip-types scripts/validate-anchors.mjs",
+    "fetch:network": "node scripts/fetch-osm-network.mjs",
+    "generate:illustrated-ground": "node scripts/generate-illustrated-ground.mjs",
+    "check:illustrated": "node scripts/generate-illustrated-ground.mjs --check && node scripts/prepare-map-worker.mjs --check && node scripts/check-illustrated-assets.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.106.1",
     "@turf/turf": "^7.3.5",
-    "maplibre-gl": "^5.24.0",
-    "next": "16.2.6",
+    "geist": "^1.7.2",
+    "maplibre-gl": "^6.8.0",
+    "next": "16.3.4",
     "openai": "^6.42.0",
     "react": "19.2.4",
-    "react-dom": "19.2.4"
+    "react-dom": "19.2.4",
+    "three": "^0.186.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@types/three": "^0.186.0",
     "eslint": "^9",
-    "eslint-config-next": "16.2.6",
+    "eslint-config-next": "16.3.4",
+    "sharp": "^0.35.4",
     "tailwindcss": "^4",
     "typescript": "^5",
     "vitest": "^4.1.10"

@@ -2,3 +2,10 @@ allowBuilds:
   '@vaadin/vaadin-usage-statistics': false
   sharp: true
   unrs-resolver: true
+
+# Force patched transitive dependencies that `next` still resolves to
+# vulnerable versions (styled-jsx -> @babel/core -> browserslist).
+overrides:
+  '@babel/core': '>=7.29.1'
+  browserslist: '>=4.28.7'
+  baseline-browser-mapping: '>=2.11.0'
