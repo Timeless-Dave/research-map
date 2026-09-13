@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "origin": [-92.02184, 34.24382],
+  "units": "metres",
+  "axes": "glTF X east, Y up, Z south",
+  "asset": "/illustrated/campus.glb",
+  "detailAsset": "/illustrated/detail.glb",
+  "detailMinZoom": 16
+}
