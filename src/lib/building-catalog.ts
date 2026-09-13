@@ -69,6 +69,16 @@ const CATALOG: Record<string, Entry> = {
   "childress-hall": { pinTier: "secondary", category: "Housing" },
 };
 
+/**
+ * Whether an id is deliberately classified. `resolvePinTier`/`resolveCategory`
+ * fall back to secondary/"Other" for unknown ids, which makes missing curation
+ * indistinguishable from a real classification — this is the seam that lets
+ * tests catch uncatalogued places.
+ */
+export function hasCatalogEntry(id: string): boolean {
+  return Object.prototype.hasOwnProperty.call(CATALOG, id);
+}
+
 export function resolvePinTier(id: string): PinTier {
   return CATALOG[id]?.pinTier ?? "secondary";
 }
