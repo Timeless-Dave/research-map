@@ -1,0 +1,207 @@
+{
+  "alumni-house": [
+    {
+      "type": "parking",
+      "lng": -92.021784,
+      "lat": 34.245328,
+      "source": "osm",
+      "verification": "unverified",
+      "note": "OSM amenity=parking, 109m from place centre, 0m from way/818591176",
+      "osmId": "way/818591173"
+    }
+  ],
+  "caine-gilleland-hall": [
+    {
+      "type": "parking",
+      "lng": -92.021486,
+      "lat": 34.241686,
+      "source": "osm",
+      "verification": "unverified",
+      "note": "OSM amenity=parking, 55m from place centre, 5m from way/818591144",
+      "osmId": "way/818591165"
+    }
+  ],
+  "child-development-center": [
+    {
+      "type": "parking",
+      "lng": -92.019467,
+      "lat": 34.244247,
+      "source": "osm",
+      "verification": "unverified",
+      "note": "OSM amenity=parking, 40m from place centre, 2m from way/818591156",
+      "osmId": "way/818591159"
+    }
+  ],
+  "dawson-hicks-hall": [
+    {
+      "type": "parking",
+      "lng": -92.019126,
+      "lat": 34.240659,
+      "source": "osm",
+      "verification": "unverified",
+      "note": "OSM amenity=parking, 126m from place centre, 5m from way/818591148",
+      "osmId": "way/818591167"
+    }
+  ],
+  "delta-housing-complex": [
+    {
+      "type": "parking",
+      "lng": -92.022829,
+      "lat": 34.248166,
+      "source": "osm",
+      "verification": "unverified",
+      "note": "OSM amenity=parking, 80m from place centre, 3m from way/1073352266",
+      "osmId": "way/1073352268"
+    }
+  ],
+  "facilities-management": [
+    {
+      "type": "parking",
+      "lng": -92.023311,
+      "lat": 34.247048,
+      "source": "osm",
+      "verification": "unverified",
+      "note": "OSM amenity=parking, 54m from place centre, 3m from way/818600630",
+      "osmId": "way/818600632"
+    }
+  ],
+  "fitness-center": [
+    {
+      "type": "walking",
+      "lng": -92.020713,
+      "lat": 34.243891,
+      "source": "osm",
+      "verification": "unverified",
+      "note": "OSM entrance=yes, 13m from place centre",
+      "osmId": "node/7644562617"
+    },
+    {
+      "type": "walking",
+      "lng": -92.020626,
+      "lat": 34.243889,
+      "source": "osm",
+      "verification": "unverified",
+      "note": "OSM entrance=yes, 12m from place centre",
+      "osmId": "node/7644562619"
+    },
+    {
+      "type": "parking",
+      "lng": -92.020988,
+      "lat": 34.244279,
+      "source": "osm",
+      "verification": "unverified",
+      "note": "OSM amenity=parking, 45m from place centre, 1m from way/818591130",
+      "osmId": "way/818591160"
+    }
+  ],
+  "harrold-complex": [
+    {
+      "type": "parking",
+      "lng": -92.023137,
+      "lat": 34.242445,
+      "source": "osm",
+      "verification": "unverified",
+      "note": "OSM amenity=parking, 72m from place centre, 3m from way/818591115",
+      "osmId": "way/818591164"
+    }
+  ],
+  "health-physical-education-and-recreation-hper-building": [
+    {
+      "type": "parking",
+      "lng": -92.023982,
+      "lat": 34.246292,
+      "source": "osm",
+      "verification": "unverified",
+      "note": "OSM amenity=parking, 50m from place centre, 4m from way/838089261",
+      "osmId": "way/1073352275"
+    }
+  ],
+  "infirmary-building": [
+    {
+      "type": "parking",
+      "lng": -92.020549,
+      "lat": 34.243428,
+      "source": "osm",
+      "verification": "unverified",
+      "note": "OSM amenity=parking, 45m from place centre, 2m from way/453258739",
+      "osmId": "way/818591169"
+    }
+  ],
+  "larrison-hall": [
+    {
+      "type": "parking",
+      "lng": -92.022736,
+      "lat": 34.24376,
+      "source": "osm",
+      "verification": "unverified",
+      "note": "OSM amenity=parking, 45m from place centre, 4m from way/818591134",
+      "osmId": "way/818591161"
+    }
+  ],
+  "lewis-hall": [
+    {
+      "type": "parking",
+      "lng": -92.021552,
+      "lat": 34.242995,
+      "source": "osm",
+      "verification": "unverified",
+      "note": "OSM amenity=parking, 51m from place centre, 2m from way/818591154",
+      "osmId": "way/818591171"
+    }
+  ],
+  "parker-1890-complex": [
+    {
+      "type": "parking",
+      "lng": -92.024307,
+      "lat": 34.251515,
+      "source": "osm",
+      "verification": "unverified",
+      "note": "OSM amenity=parking, 34m from place centre, 4m from way/909829070",
+      "osmId": "way/1073350431"
+    }
+  ],
+  "rust-technology-building": [
+    {
+      "type": "parking",
+      "lng": -92.022192,
+      "lat": 34.240939,
+      "source": "osm",
+      "verification": "unverified",
+      "note": "OSM amenity=parking, 32m from place centre, 3m from way/818591149",
+      "osmId": "way/818591166"
+    }
+  ],
+  "stem-building": [
+    {
+      "type": "parking",
+      "lng": -92.023822,
+      "lat": 34.244373,
+      "source": "osm",
+      "verification": "unverified",
+      "note": "OSM amenity=parking, 31m from place centre, 3m from way/818591143",
+      "osmId": "way/818591163"
+    }
+  ],
+  "walker-research-center": [
+    {
+      "type": "parking",
+      "lng": -92.021603,
+      "lat": 34.244034,
+      "source": "osm",
+      "verification": "unverified",
+      "note": "OSM amenity=parking, 49m from place centre, 5m from way/818591131",
+      "osmId": "way/818591172"
+    }
+  ],
+  "woodward-hall": [
+    {
+      "type": "walking",
+      "lng": -92.021827,
+      "lat": 34.243966,
+      "source": "osm",
+      "verification": "unverified",
+      "note": "OSM entrance=yes, 29m from place centre",
+      "osmId": "node/7644562641"
+    }
+  ]
+}
